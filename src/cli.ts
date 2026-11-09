@@ -8,7 +8,7 @@ import {
   type Cfg, P, ROOT, _commitPush, _pull, agentName, chooseCli, claim, commitPush, heartbeat, hostCaps, hostName, journal,
   list, loadConfig, locked, newTask, now, onlineHosts, pickTask, pull, readDoc, remember, writeDoc,
 } from "./core";
-import { amendDecision, closeDecision, IGNORE, ignoreDecision, openDecision, overrideJudge, ownerPickedMenu, recentJudgeIds, routeDecision } from "./decisions";
+import { amendDecision, closeDecision, IGNORE, ignoreDecision, openDecision, overrideJudge, ownerPickedMenu, recentJudgeIds, recordShadow, routeDecision, shadowJudge } from "./decisions";
 import { notify, openDecisionIds, pollReplies } from "./notify";
 import { STALLED, agentProcs, ask, buildPrompt, parseResult, quickAsk, runAgent } from "./runner";
 import { writeRules } from "./rules";
@@ -232,6 +232,10 @@ async function processTask(path: string, cfg: Cfg, host: string) {
   if (delegated && children.length) { // wait for children, then wake up to consolidate
     writeDoc(P("tasks", "waiting", `${meta.id}.md`), { ...done, children: children.join(",") }, body + runNote);
     journal(host, `🧩 ${meta.id} delegated to ${children.join(", ")}`);
+    if (ownerWork) void notify(`🧩 ${agentName(agent)} 把 ${meta.id} 拆成 ${children.length} 个子任务，马上分派并行处理：\n` +
+      children.map((c, i) => `- ${c}：${res.followups?.[i]?.title ?? ""}`).join("\n"), cfg, { quiet: true, ref: meta.id }).catch(() => {});
+    // plan and start the children now instead of on the next tick (up to a minute later)
+    queueMicrotask(() => void planInbox(cfg, host).then(wakeDaemon).catch(() => {}));
   } else if (res.status === "waiting") { // parked: the slot is free until the wait is over
     const w = waitMeta(res);
     const wakes = Number(meta.wakes ?? 0);
@@ -245,6 +249,7 @@ async function processTask(path: string, cfg: Cfg, host: string) {
     writeDoc(P("tasks", "blocked", `${meta.id}.md`), { ...done, decision: did }, body + runNote);
     journal(host, `⏸ ${meta.id} → ${did}: ${res.question}`);
     pendingRoute.push(did);
+    queueMicrotask(wakeDaemon); // route the card now, not on the next tick
   } else {
     const folder = res.status === "done" ? "done" : "failed";
     writeDoc(P("tasks", folder, `${meta.id}.md`), done, body + runNote);
@@ -623,7 +628,14 @@ export async function tick(cfg: Cfg, background = false) {
       .filter((m) => !m.held && m.kind !== "proposals").map((m) => m.id)];
     for (const id of new Set(toRoute)) {
       if (!require("node:fs").existsSync(P("decisions", "open", `${id}.md`))) continue;
-      await locked(async () => { await _pull(); await routeDecision(id, cfg, host); await _commitPush(`[${host}] route ${id}`); });
+      let shadow = false;
+      await locked(async () => { await _pull(); shadow = (await routeDecision(id, cfg, host)) === "shadow"; await _commitPush(`[${host}] route ${id}`); });
+      if (shadow) { // the card is already out: judge in the background, outside the lock, so an answer applies at once
+        void shadowJudge(id, cfg).then(async (v) => {
+          if (v !== undefined) await locked(async () => { await _pull(); recordShadow(id, v, host); await _commitPush(`[${host}] shadow ${id}`); });
+        })
+          .catch((e) => journal(host, `⚠️ shadow-judge on ${id} failed: ${e}`));
+      }
     }
   }
   // resource governor: disk first, then adaptive parallelism
@@ -646,6 +658,11 @@ export async function tick(cfg: Cfg, background = false) {
     running++;
     const tid = basename(active, ".md");
     runningIds.add(tid);
+    const am: Record<string, string> = existsSync(active) ? readDoc(active).meta : {}; // the claim can vanish under us
+    // Owner work only: the channel otherwise goes quiet from "task created" until a result or a card arrives.
+    // Team channel only (quiet: no ntfy/Slack). One event per run, owner-requested tasks only, so a few per day.
+    if (am.origin === "owner" || /^owner/.test(am.source ?? ""))
+      void notify(`▶️ ${agentName(am.agent)} ${am.resumes || am.resumed ? "继续处理" : "开始处理"} ${tid}：${am.title}`, cfg, { quiet: true, ref: tid }).catch(() => {});
     const job = processTask(active, cfg, host)
       .catch((e) => { console.error(e); journal(host, `💥 worker crashed on ${active}: ${e}`); })
       .finally(() => { running--; runningIds.delete(tid); });
@@ -726,6 +743,7 @@ async function daemon(cfg: Cfg) {
       // waiting on the owner's card: what they write on the task is their answer to it
       if (dir === "blocked" && meta.decision && existsSync(P("decisions", "open", `${meta.decision}.md`))) {
         answerFromChat(String(meta.decision), text, false);
+        wakeDaemon();
         return String(meta.title ?? tid);
       }
       if (dir === "blocked" || dir === "done" || dir === "failed") { // a task is a conversation: talking to a finished one continues it, under the same id
@@ -822,6 +840,7 @@ async function daemon(cfg: Cfg) {
       answer_decision: async (op) => {
         const open = existsSync(P("decisions", "open", `${op.id}.md`));
         answerFromChat(op.id, op.answer, !open);
+        wakeDaemon(); // apply the answer and requeue the task now, not on the next tick
         return { ok: true, id: op.id, ...(open ? {} : { amended: true }) };
       },
       send_message: async (op) => { await handleOwnerMessage(op.text, op.reply_to); return { ok: true }; },

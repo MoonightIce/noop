@@ -33,12 +33,14 @@ afterAll(() => { // the data dir is shared with every other test file: leave the
 const cfg = { judge: { enabled: true } } as any; // autonomy level defaults to onboarding → shadow mode
 const open = (rec = "A", question = "Merge?") => dec.openDecision({ id: "T-0001", agent: "lead" }, { status: "blocked", summary: "ctx", question, recommendation: rec, options: ["A: merge", "B: wait"] } as any, "h");
 const closed = (id: string) => core.readDoc(core.P("decisions", "closed", `${id}.md`)).meta;
+// what the daemon does: route the card; in onboarding the card goes out first and the judge runs afterwards (shadow)
+const route = async (id: string, c = cfg) => { if ((await dec.routeDecision(id, c, "h")) === "shadow") dec.recordShadow(id, await dec.shadowJudge(id, c), "h"); };
 const lessons = () => (existsSync(core.P("memory", "lessons.md")) ? readFileSync(core.P("memory", "lessons.md"), "utf8") : "");
 
 test("judge hold is still recorded and scored against the owner", async () => {
   judgeReply = { verdict: "hold", answer: "B: wait", reason: "release gate" };
   const id = open("A");
-  await dec.routeDecision(id, cfg, "h");
+  await route(id);
   const o = core.readDoc(core.P("decisions", "open", `${id}.md`)).meta;
   expect(o.shadow_verdict).toBe("hold");
   expect(o.shadow_answer).toBe("B: wait");
@@ -58,7 +60,7 @@ test("shadow decided verdict feeds judgeAccuracy; agreeing with the recommendati
   judgeReply = { verdict: "decided", answer: "A", reason: "precedent", cite: "D-0001" };
   const before = lessons();
   const id = open("A");
-  await dec.routeDecision(id, cfg, "h");
+  await route(id);
   expect(existsSync(core.P("decisions", "open", `${id}.md`))).toBe(true); // onboarding: still asks the owner
   dec.closeDecision(id, "A: merge", "owner(cli@h)");
   expect(closed(id).shadow_verdict).toBe("decided");
@@ -74,7 +76,7 @@ test("shadow decided verdict feeds judgeAccuracy; agreeing with the recommendati
 test("judge failure is recorded as error; judge auto-decision keeps its shadow fields and is not self-scored", async () => {
   judgeReply = null;
   const id = open();
-  await dec.routeDecision(id, cfg, "h");
+  await route(id);
   expect(core.readDoc(core.P("decisions", "open", `${id}.md`)).meta.shadow_verdict).toBe("error");
   dec.closeDecision(id, "B", "owner(chat)");
   expect(closed(id).shadow_agree).toBeUndefined();
@@ -85,6 +87,20 @@ test("judge failure is recorded as error; judge auto-decision keeps its shadow f
   expect(closed(id2).answered_by).toBe("judge");
   expect(closed(id2).shadow_verdict).toBe("decided");
   expect(closed(id2).shadow_agree).toBeUndefined();
+});
+
+test("onboarding: the card is shown before the judge runs; an answer given meanwhile is still scored", async () => {
+  judgeReply = { verdict: "hold", answer: "B: wait", reason: "new call" };
+  sent.length = 0;
+  const id = open("A", "Ship it?");
+  expect(await dec.routeDecision(id, cfg, "h")).toBe("shadow");
+  expect(sent.at(-1)).toContain("Ship it?"); // shown at once, no judge yet
+  expect(core.readDoc(core.P("decisions", "open", `${id}.md`)).meta.shadow_verdict).toBeUndefined();
+  const v = await dec.shadowJudge(id, cfg); // judge started while the card was open…
+  dec.closeDecision(id, "B", "owner(chat)"); // …and the owner answered before it finished
+  dec.recordShadow(id, v, "h");
+  expect(closed(id).shadow_verdict).toBe("hold");
+  expect(closed(id).shadow_agree).toBe("yes");
 });
 
 test("choice() normalises option answers", () => {

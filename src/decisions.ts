@@ -166,9 +166,16 @@ export function sendBack(id: string, reason: string) {
   closeDecision(id, `SENT BACK by judge: ${reason}`, "judge");
 }
 
-export async function routeDecision(id: string, cfg: Cfg, host: string) {
-  let v = await judge(id, cfg);
+/** Route a new card. Returns "shadow" when it was shown to the owner at once because the judge may not decide yet
+ *  (onboarding): the caller then runs `shadowJudge` outside the data lock, so the owner neither waits for the judge
+ *  (an Opus call, often 30-60s) to see the card nor for it to finish before an answer is applied. */
+export async function routeDecision(id: string, cfg: Cfg, host: string): Promise<"shadow" | void> {
   const f = P("decisions", "open", `${id}.md`);
+  if (!judgeMayDecide(cfg, readDoc(f).meta.agent)) {
+    await holdForOwner(id, cfg, host);
+    return "shadow";
+  }
+  let v = await judge(id, cfg);
   let { meta, body } = readDoc(f);
   // Every judge run is recorded (hold included) so closeDecision can score it against the owner's answer.
   if (meta.kind !== "menu" && cfg.judge?.enabled !== false) {
@@ -194,6 +201,12 @@ export async function routeDecision(id: string, cfg: Cfg, host: string) {
     return;
   }
   // hold → ask the human
+  await holdForOwner(id, cfg, host);
+}
+
+/** Show a card to the owner (team channel + notification channels) and mark it held. */
+async function holdForOwner(id: string, cfg: Cfg, host: string) {
+  const { meta, body } = readDoc(P("decisions", "open", `${id}.md`));
   const opts = (meta.options ?? "").split(" | ").filter(Boolean);
   const menu = meta.kind === "menu";
   const context = body.match(/## Context\n([\s\S]*?)(?=\n## |$)/)?.[1]?.trim() ?? "";
@@ -215,6 +228,30 @@ export async function routeDecision(id: string, cfg: Cfg, host: string) {
     attachments: (meta.attachments ?? "").split(" | ").filter(Boolean), from: `${agentName(meta.agent)}@${meta.host}` });
   writeDoc(P("decisions", "open", `${id}.md`), { ...meta, held: now(), notified: ids.join(",") }, body);
   journal(host, `📨 ${id} held for owner: ${meta.question}`);
+}
+
+/** Run the judge on a card the owner already sees (onboarding). Call outside the data lock; then `recordShadow`. */
+export async function shadowJudge(id: string, cfg: Cfg): Promise<Verdict | null | undefined> {
+  // undefined = nothing to judge (judge off, menu, card already gone); null = the judge call failed (recorded as "error")
+  if (cfg.judge?.enabled === false || !existsSync(P("decisions", "open", `${id}.md`))) return undefined;
+  if (readDoc(P("decisions", "open", `${id}.md`)).meta.kind === "menu") return undefined;
+  return judge(id, cfg);
+}
+
+/** Store what the judge would have answered, wherever the card is now. If the owner answered while the judge was
+ *  still thinking, closeDecision had nothing to score, so score it here (same rule as `learn`). */
+export function recordShadow(id: string, v: Verdict | null | undefined, host: string) {
+  if (v === undefined) return;
+  const closed = P("decisions", "closed", `${id}.md`);
+  const f = [P("decisions", "open", `${id}.md`), closed].find(existsSync);
+  if (!f) return;
+  const { meta, body } = readDoc(f);
+  const shadow_answer = v?.answer ?? (v?.verdict === "sent_back" ? `SENT BACK: ${v.reason}` : "");
+  const extra: Record<string, string> = { shadow_verdict: v?.verdict ?? "error", shadow_answer };
+  if (f === closed && /^owner/.test(meta.answered_by ?? "") && shadow_answer && !meta.shadow_agree)
+    extra.shadow_agree = choice(shadow_answer) === choice(meta.answer ?? "") ? "yes" : "no";
+  writeDoc(f, { ...meta, ...extra }, body);
+  if (v && v.verdict !== "hold") journal(host, `👤 shadow-judge on ${id}: would ${v.verdict} "${v.answer ?? v.reason}"`);
 }
 
 /** Owner overrides a judge ruling: `D-0007 override <new answer>` → feedback memory + redo task. */
