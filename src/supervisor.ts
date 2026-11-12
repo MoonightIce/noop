@@ -52,6 +52,10 @@ export function classify(t: Task, ctx: Ctx): Verdict | null {
   // 2. blocked on a card that is already closed → the answer never reached it
   if (t.folder === "blocked" && m.decision && ctx.decision(m.decision) === "closed") return v(`answered:${m.decision}`, "resume", [`${m.decision} 已回答但任务没有继续`]);
   if (t.folder === "blocked" && m.decision && ctx.decision(m.decision) === "open") return null; // the owner has the card
+  // waits on a person for a card that is still open: the owner already has that card, a second one is noise
+  const waitsOnCard = m.wait_kind === "human" && t.folder === "waiting"
+    && [...`${m.waiting_on ?? ""} ${m.wait_check ?? ""}`.matchAll(/\b([DP]-\d+)\b/g)].some(([, id]) => ctx.decision(id) === "open");
+  if (waitsOnCard) return null;
   const age = (ctx.now - startedAt(m)) / 3_600_000;
   const wakes = Number(m.wakes ?? 0);
   const reasons: string[] = [];

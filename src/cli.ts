@@ -555,6 +555,11 @@ export function maybeProposeNext(cfg: Cfg, host: string, state: Record<string, s
     .sort((a, b) => Date.parse(b.created) - Date.parse(a.created))[0];
   const cooldown = (cfg.idle?.cooldown_minutes ?? 180) * 60_000;
   if (pendingMenu && Date.now() - Date.parse(pendingMenu.created) < cooldown) return;
+  // A menu task that deferred (waiting on the owner's answer) counts as an offer too; otherwise a stale unanswered
+  // menu respawns a menu task every 15 minutes, each one parks, and the supervisor files cards about them.
+  const parkedMenu = ["waiting", "blocked"].flatMap((f) => list(P("tasks", f), /^T-.*\.md$/).map((p) => readDoc(p).meta))
+    .filter((m) => m.kind === "menu").map((m) => Date.parse(m.created) || 0).sort((a, b) => b - a)[0];
+  if (parkedMenu && Date.now() - parkedMenu < cooldown) return;
   if (state.last_menu && Date.now() - Date.parse(state.last_menu) < 15 * 60_000) return;
   const id = newTask("Propose next actions (fleet idle)", `The fleet has been idle for ${Math.round(idleMin)} minutes.
 Build the owner's next-action menu per your profile and return needs_decision.${pendingMenu ? `\nAn earlier menu ${pendingMenu.id} is still unanswered — refresh it (drop stale items) rather than repeating it verbatim.` : ""}`,
