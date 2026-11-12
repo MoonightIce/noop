@@ -239,7 +239,9 @@ export type HostBeat = { host: string; caps: string[]; seen: string; busy: numbe
 
 /** A running agent's latest sign of life: any output; for Claude also the step it took ("Bash · gh pr checks 814"). */
 export type Activity = { at: string; step?: string; steps: number;
-  /** The model actually answering (Claude reports it in its stream; Codex: the one it was started with). */ model?: string };
+  /** The model actually answering (Claude reports it in its stream; Codex: the one it was started with). */ model?: string;
+  /** Claude's TodoWrite progress, "3/7 移植 Domain 层". */ todo?: string;
+  /** The agent's latest words between steps, one short line: often its interim finding. */ note?: string };
 /** This process's running agents (written by runAgent, published in the heartbeat). */
 export const agentActivity = new Map<string, Activity>();
 

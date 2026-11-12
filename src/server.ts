@@ -17,7 +17,7 @@ import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { accountsInfo } from "./accounts";
 import { cliCommand, startModel } from "./runner";
-import { type Cfg, DATA, L, P, _commitPush, isEnglish, allowedClis, hostName, locked, list, loadConfig, onlineHosts, readDoc, UPDATE_REQUEST } from "./core";
+import { type Cfg, DATA, L, P, _commitPush, agentActivity, isEnglish, allowedClis, hostName, locked, list, loadConfig, onlineHosts, readDoc, UPDATE_REQUEST } from "./core";
 import { mediaHeaders, ownerAttachments, sniffImage, uploadId, uploadProblem } from "../cloud/src/uploads";
 import { timingSafeEqual } from "node:crypto";
 import { readable, validPath } from "../cloud/src/files";
@@ -184,7 +184,8 @@ export function status() {
   // a running task carries its agent's latest sign of life (from the heartbeat of the machine running it)
   const beats = (() => { try { return onlineHosts(loadConfig()); } catch { return []; } })();
   const active = list(P("tasks", "active"), /^T-.*\.md$/).map((p) => taskView(p, "active", log))
-    .map((t) => ({ ...t, activity: beats.find((h) => h.host === t.host)?.activity?.[t.id] }));
+    // this machine's own runs: the live value, not the last heartbeat written at the previous tick (up to a minute old)
+    .map((t) => ({ ...t, activity: agentActivity.get(t.id) ?? beats.find((h) => h.host === t.host)?.activity?.[t.id] }));
   const others = ["done", "failed", "blocked", "waiting", "inbox"].flatMap((f) => list(P("tasks", f), /^T-.*\.md$/).map((p) => taskView(p, f, log)))
     .sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? ""));
   return {

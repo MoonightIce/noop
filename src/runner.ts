@@ -1,4 +1,5 @@
 // Builds the prompt for an agent, runs Claude Code / Codex headless, parses the structured result.
+import { activityStep, narration, todoProgress } from "./progress";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -195,12 +196,13 @@ export async function runAgent(cli: string, prompt: string, cwd: string, cfg: Cf
 
   // what the agent is doing: every chunk of output is a sign of life; Claude's stream also names each step
   const json = cmd.includes("stream-json");
-  const act = { at: Date.now(), step: undefined as string | undefined, steps: 0, model: startModel(cli, cmd, extraEnv.CODEX_HOME) };
+  const act = { at: Date.now(), step: undefined as string | undefined, steps: 0, model: startModel(cli, cmd, extraEnv.CODEX_HOME),
+    todo: undefined as string | undefined, note: undefined as string | undefined };
   const inFlight = new Map<string, string>(); // tool_use id → tool name, until its result comes back
   let resultText: string | undefined, assistantText = "";
   const touch = () => {
     act.at = Date.now();
-    if (tid) agentActivity.set(tid, { at: new Date(act.at).toISOString(), step: act.step, steps: act.steps, model: act.model });
+    if (tid) agentActivity.set(tid, { at: new Date(act.at).toISOString(), step: activityStep(act), steps: act.steps, model: act.model, todo: act.todo, note: act.note });
   };
   touch();
   const onLine = (line: string) => {
@@ -210,8 +212,10 @@ export async function runAgent(cli: string, prompt: string, cwd: string, cfg: Cf
     if (e.type === "assistant") {
       if (e.message?.model && !e.parent_tool_use_id) act.model = String(e.message.model);
       for (const c of e.message?.content ?? []) {
-        if (c.type === "tool_use") { inFlight.set(c.id, c.name); act.step = toolStep(c.name, c.input); act.steps++; }
-        else if (c.type === "text" && !e.parent_tool_use_id) assistantText += c.text;
+        if (c.type === "tool_use") {
+          inFlight.set(c.id, c.name); act.step = toolStep(c.name, c.input); act.steps++;
+          if (c.name === "TodoWrite" && !e.parent_tool_use_id) act.todo = todoProgress(c.input?.todos) ?? act.todo;
+        } else if (c.type === "text" && !e.parent_tool_use_id) { assistantText += c.text; act.note = narration(c.text) ?? act.note; }
       }
     } else if (e.type === "user") {
       for (const c of e.message?.content ?? []) if (c.type === "tool_result") inFlight.delete(c.tool_use_id);

@@ -28,6 +28,7 @@ import { answerFromChat, appendEvent, cancelTask, drainInbound, feed, handleOwne
 import { addFollowUp, followUpTarget, reopenTask, type BrainOut, ClaudeModel, systemPrompt, dataActs, localStore, logBrain, think } from "./brain";
 import { isWrite, runTool } from "../cloud/src/tools";
 import { cloudDeploy, startCloudBridge } from "./cloud";
+import { isOwnerWork, queueReason, resumeReason } from "./progress";
 import { adoptCloudUrl, readHubToml } from "./sync";
 import { judgeAccuracy, level, needsApproval, noteStuckRoutine, proposeBatch, resolveProposals, routineQueued, supersedeProposed } from "./autonomy";
 import { CODE, L, UPDATE_REQUEST, type UpdateState, setUpdateState, updateState, allowedClis, capOk, idTagFor, isPrimary, runningRev, setApprovalGate, setIdTag } from "./core";
@@ -215,7 +216,8 @@ async function processTask(path: string, cfg: Cfg, host: string) {
     children.push(id);
     journal(host, `  ↳ ${id} → ${f.agent ?? agent}: ${f.title}`);
   }
-  const done = { ...meta, channels: chans, cli_used: cli, finished: now(), status: res.status, gate_override: undefined, requeue_note: undefined, stalls: undefined };
+  const done = { ...meta, channels: chans, cli_used: cli, finished: now(), status: res.status, gate_override: undefined, requeue_note: undefined, stalls: undefined,
+    retried_after: undefined, resumed: undefined }; // requeue markers describe one claim; a later one sets its own
   const runNote = `\n\n## Run ${now()} · ${host} · ${cli}\n**${res.status}** — ${res.summary}\n`;
   // the owner added to the request while it ran: run again with the additions instead of reporting a stale result
   const latest = existsSync(path) ? readDoc(path).body : body;
@@ -644,13 +646,14 @@ export async function tick(cfg: Cfg, background = false) {
   await ensureDisk(cfg, host, busyRepos, (t) => notify(t, cfg));
   const jobs: Promise<void>[] = [];
   const tried = new Set<string>();
+  let stop: string | undefined, maxNow = 0; // why the loop stopped claiming (owner tasks left queued are told why)
   for (;;) {
     if (draining) break; // stopping: finish what runs, start nothing new
     const s = sample(cfg);
-    const max = allowedParallel(s, cfg, running);
-    if (running >= max) break;
-    if (!pickAccount(cfg, ["claude", "codex"].filter((c) => Bun.which(c)))) break;
-    if ((await githubStarved(cfg)).starved && list(P("tasks", "inbox"), /^T-.*\.md$/).every((p) => GH_HEAVY.has(readDoc(p).meta.agent))) break;
+    const max = maxNow = allowedParallel(s, cfg, running);
+    if (running >= max) { stop = "full"; break; }
+    if (!pickAccount(cfg, ["claude", "codex"].filter((c) => Bun.which(c)))) { stop = "accounts"; break; }
+    if ((await githubStarved(cfg)).starved && list(P("tasks", "inbox"), /^T-.*\.md$/).every((p) => GH_HEAVY.has(readDoc(p).meta.agent))) { stop = "github"; break; }
     const t = pickTask(cfg, s.loadRatio, canRunHeavy(s, cfg, running));
     if (!t) break;
     const active = await claim(t, host);
@@ -658,17 +661,38 @@ export async function tick(cfg: Cfg, background = false) {
     running++;
     const tid = basename(active, ".md");
     runningIds.add(tid);
-    const am: Record<string, string> = existsSync(active) ? readDoc(active).meta : {}; // the claim can vanish under us
+    const doc = existsSync(active) ? readDoc(active) : { meta: {} as Record<string, string>, body: "" }; // the claim can vanish under us
     // Owner work only: the channel otherwise goes quiet from "task created" until a result or a card arrives.
     // Team channel only (quiet: no ntfy/Slack). One event per run, owner-requested tasks only, so a few per day.
-    if (am.origin === "owner" || /^owner/.test(am.source ?? ""))
-      void notify(`▶️ ${agentName(am.agent)} ${am.resumes || am.resumed ? "继续处理" : "开始处理"} ${tid}：${am.title}`, cfg, { quiet: true, ref: tid }).catch(() => {});
+    if (isOwnerWork(doc.meta)) {
+      const why = resumeReason(doc.meta, doc.body);
+      void notify(`▶️ ${agentName(doc.meta.agent)} ${why === null ? "开始处理" : "继续处理"} ${tid}：${doc.meta.title}${why ? `（${why}）` : ""}`,
+        cfg, { quiet: true, ref: tid }).catch(() => {});
+    }
     const job = processTask(active, cfg, host)
       .catch((e) => { console.error(e); journal(host, `💥 worker crashed on ${active}: ${e}`); })
       .finally(() => { running--; runningIds.delete(tid); });
     jobs.push(job);
   }
+  if (isPrimary(cfg, host)) noteQueued(cfg, stop, running, maxNow);
   if (!background) await Promise.all(jobs);
+}
+
+/** Owner tasks the primary could not start this round: say once per task why they wait (busy machine, accounts on
+ *  cooldown), instead of leaving the channel silent until a slot frees up. Kept in memory: a restart may repeat it once. */
+const queueNoticed = new Set<string>();
+function noteQueued(cfg: Cfg, stop: string | undefined, running: number, max: number) {
+  const queued = list(P("tasks", "inbox"), /^T-.*\.md$/).map((p) => readDoc(p).meta)
+    .filter((m) => m.planned && !m.parked && isOwnerWork(m))
+    .sort((a, b) => (a.created ?? "").localeCompare(b.created ?? ""));
+  for (const id of queueNoticed) if (!queued.some((m) => m.id === id)) queueNoticed.delete(id); // claimed or gone
+  queued.forEach((m, ahead) => {
+    if (queueNoticed.has(m.id)) return;
+    const why = queueReason({ stop, running, max, ahead });
+    if (!why) return;
+    queueNoticed.add(m.id);
+    void notify(`⏳ ${m.id} 排队中：${why}`, cfg, { quiet: true, ref: m.id }).catch(() => {});
+  });
 }
 
 /** AI placement for new tasks: which host capabilities a task needs (e.g. os:macos for iOS screenshots), which CLI
