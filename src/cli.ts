@@ -698,6 +698,9 @@ function noteQueued(cfg: Cfg, stop: string | undefined, running: number, max: nu
 /** AI placement for new tasks: which host capabilities a task needs (e.g. os:macos for iOS screenshots), which CLI
  *  fits it (Claude for hard engineering, Codex for routine work), and how hard it is. One call for the whole batch. */
 let planning: Promise<void> | null = null;
+/** After a planner call with no usable answer (both CLIs out of quota, timeout) wait before asking again: tasks run
+ *  unplanned after plan_wait_minutes anyway, and retrying every tick spent one CLI call a minute for an hour. */
+let planRetryAt = 0;
 /** One planner run at a time (a chat task plans at once, the tick plans the rest): a second caller waits for the first. */
 function planInbox(cfg: Cfg, host: string): Promise<void> {
   planning ??= planNow(cfg, host).finally(() => { planning = null; });
@@ -711,7 +714,7 @@ const nap = (ms: number) => Promise.race([Bun.sleep(ms), new Promise<void>((r) =
 
 async function planNow(cfg: Cfg, host: string) {
   const todo = list(P("tasks", "inbox"), /^T-.*\.md$/).map((p) => ({ p, ...readDoc(p) })).filter((t) => !t.meta.planned).slice(0, 12);
-  if (!todo.length) return;
+  if (!todo.length || Date.now() < planRetryAt) return;
   const hosts = onlineHosts(cfg).map((h) => `- ${h.host}: ${h.caps.join(",")}`).join("\n");
   const r = await quickAsk(`You place tasks for an AI agent fleet running on several machines.
 For each task decide:
@@ -731,7 +734,8 @@ ${todo.map((t) => `- ${t.meta.id} [agent ${t.meta.agent}${t.meta.requires ? `, a
 
 Reply with exactly one fenced json block: {"<task id>": {"requires": "", "cli": "claude", "difficulty": "normal", "channels": []}, ...}`,
     cfg, P("logs", "runs", `plan-${Date.now()}.log`));
-  if (!r || typeof r !== "object") return; // planner unavailable: tasks run unplanned after plan_wait_minutes
+  if (!r || typeof r !== "object") { planRetryAt = Date.now() + 10 * 60_000; return; } // planner unavailable: tasks run unplanned after plan_wait_minutes
+  planRetryAt = 0;
   await locked(async () => {
     await _pull();
     for (const t of todo) {
