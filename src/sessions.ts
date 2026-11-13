@@ -48,7 +48,7 @@ export function redact(s: string): string {
 
 // ---------------------------------------------------------------- filters
 const FLEET_PROMPT = /^You are \*\*[^*]+\*\*, a permanent member|You are the owner's JUDGE|^\[SYSTEM NOTIFICATION|^You place tasks for an AI agent fleet|^You are the Noop MEDIC/;
-const INJECTED = /^(<environment_context>|<user_instructions>|# AGENTS\.md|<permissions instructions>|<local-command|<command-name>|<command-message>|<task-notification>|<bash-|<agent-message|Caveat:|\[Request interrupted|This session is being continued|<artifact-content-authored-by-others|<turn_aborted>|<external_codex_apps_open_page|The following is the Codex agent history)/;
+const INJECTED = /^(<environment_context>|<user_instructions>|# AGENTS\.md|<permissions instructions>|<local-command|<command-name>|<command-message>|<task-notification>|<bash-|<agent-message|Caveat:|\[Request interrupted|This session is being continued|<artifact-content-authored-by-others|<turn_aborted>|<external_codex_apps_open_page|The following is the Codex agent history|<recommended_plugins>)/;
 
 function clean(text: string): string {
   return text
@@ -98,6 +98,7 @@ export function readCodex(file: string): Turn[] {
     if (!line) continue;
     let l: any; try { l = JSON.parse(line); } catch { continue; }
     const p = l.payload ?? {};
+    if (l.type === "session_meta" && p.source?.subagent) return []; // spawned by another agent: its "user" turns are that agent's brief
     if (l.type === "session_meta" && p.cwd) project = basename(p.cwd);
     if (l.type === "turn_context" && p.cwd) project = basename(p.cwd);
     if (l.type !== "response_item" || p.type !== "message") continue;
