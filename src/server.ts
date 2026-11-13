@@ -136,6 +136,22 @@ const STEP_KINDS: [string[], string][] = [
 ];
 
 /** What the app shows for a task: its request, state, timeline and results. */
+const TASK_FOLDERS = ["active", "inbox", "waiting", "blocked", "failed", "done", "proposed", "rejected"];
+/** A task's file, in whichever folder it is now. */
+function taskMeta(id: string): Record<string, string> | null {
+  for (const f of TASK_FOLDERS) { const p = P("tasks", f, `${id}.md`); if (existsSync(p)) return readDoc(p).meta; }
+  return null;
+}
+/**
+ * The tasks a card comes from, so the owner sees which work it belongs to (owner, T-0150): a decision names its task;
+ * a proposals batch has none, its items are follow-ups the tasks behind them proposed (`source: followup:T-0025`).
+ */
+export function cardSources(m: Record<string, string>): { id: string; title: string }[] {
+  const ids = m.task ? [m.task] : (m.items ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+    .map((item) => taskMeta(item)?.source?.match(/^followup:(T-[A-Z]?\d{4,})$/)?.[1] ?? item);
+  return [...new Set(ids)].map((id) => ({ id, title: taskMeta(id)?.title ?? "" }));
+}
+
 export function taskView(path: string, state: string, log: string[]) {
   const { meta: m, body } = readDoc(path);
   const { request, runs } = parseTaskBody(m.title, body);
@@ -197,7 +213,7 @@ export function status() {
       const open = rest.filter((t) => ["inbox", "nohost", "waiting", "parked", "blocked"].includes(t.state));
       return [...open, ...rest.filter((t) => !open.includes(t)).slice(0, 12)].sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? ""));
     })(),
-    decisions: list(P("decisions", "open")).map((p) => { const m = readDoc(p).meta; return { id: m.id, kind: m.kind ?? "decision", question: m.question, held: !!m.held, task: m.task }; }),
+    decisions: list(P("decisions", "open")).map((p) => { const m = readDoc(p).meta; return { id: m.id, kind: m.kind ?? "decision", question: m.question, held: !!m.held, task: m.task, sources: cardSources(m) }; }),
     channels_revision: JSON.stringify(channels()),
     hosts: hostViews(active, others.filter((t) => t.state === "done" || t.state === "failed")),
     /** The owner's latest "update every machine" (each host reports its progress on it in `hosts[].update`). */

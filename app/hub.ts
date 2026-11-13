@@ -84,7 +84,9 @@ export type Status = {
   tasks: Record<"proposed" | "inbox" | "active" | "blocked" | "failed" | "done", number>;
   active: TaskInfo[];
   recent?: TaskInfo[];
-  decisions: { id: string; kind: string; question?: string; held: boolean; task?: string }[];
+  decisions: { id: string; kind: string; question?: string; held: boolean; task?: string;
+    /** The tasks the card comes from (a decision's task; a proposals batch's proposing tasks), with their titles. */
+    sources?: { id: string; title: string }[] }[];
   hosts: HostInfo[];
   /** The owner's latest "update every machine" request. */
   update?: { at: string };
