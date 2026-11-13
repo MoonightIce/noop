@@ -75,6 +75,19 @@ test("readers: fleet planner and medic sessions are dropped whole", () => {
   }
 });
 
+test("readers: codex sub-agent sessions are dropped whole", () => {
+  for (const source of [{ subagent: { thread_spawn: { parent_thread_id: "x", depth: 1 } } }, { subagent: { other: "guardian" } }]) {
+    const meta = { type: "session_meta", payload: { cwd: "/tmp/p", originator: "codex_exec", source } };
+    expect(readCodex(jsonl([meta, codexMsg("user", "Review only src/engine.rs and report findings")]))).toEqual([]);
+  }
+  const owner = { type: "session_meta", payload: { cwd: "/tmp/p", originator: "Codex Desktop", source: "vscode" } };
+  expect(readCodex(jsonl([owner, codexMsg("user", "改成图标，别留文字")])).map((t) => t.text)).toEqual(["改成图标，别留文字"]);
+});
+
+test("ownerText: the codex plugin preamble is dropped", () => {
+  expect(ownerText("<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n</recommended_plugins>")).toBeNull();
+});
+
 test("readers: the previous AI message is redacted before it is shortened", () => {
   const turns = readCodex(jsonl([codexMsg("assistant", googleNew + " " + "y".repeat(380)), codexMsg("user", "继续做这个功能")]));
   expect(turns).toHaveLength(1);
