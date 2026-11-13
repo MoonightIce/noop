@@ -1064,6 +1064,11 @@ function answerText(t: string): string {
   return a === IGNORE ? L("Ignored", "忽略") : L(`Chose ${a}`, `选 ${a}`);
 }
 
+/** A card's source tasks on one line, for the sidebar: "T-0093 Propose next actions" (owner, T-0150). */
+function sourceLine(sources: { id: string; title: string }[]): string {
+  return sources.map((t) => (t.title ? `${t.id} ${t.title}` : t.id)).join(L(", ", "、"));
+}
+
 /** The first line of a card's text, as plain words: what an answer replies to. */
 function askLine(text: string): string {
   return (text.split("\n").find((l) => l.trim()) ?? "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*`_]/g, "").replace(/\\$/, "").trim();
@@ -1240,6 +1245,8 @@ function Message(props: {
   const picked = () => (e.ref && done() ? answerOf(props.hub.events(), e.ref) : null);
   const targeted = () => ask && !done() && props.target() === e.ref;
   const rec = recommended(e);
+  // which task the card comes from (owner, T-0150): the hub lists it for every open card
+  const sources = () => (ask && e.ref ? props.hub.status()?.decisions.find((d) => d.id === e.ref)?.sources ?? [] : []);
   // a phone has no width to spare: the avatar sits in the name's row, and the message takes the whole column
   const wide = () => windowSize().width >= WIDE;
   if (isHub(e.from) && !ask && e.kind === "system" && !e.attachments?.length)
@@ -1291,6 +1298,23 @@ function Message(props: {
                 </View>
               </If>
             </View>
+            <If when={sources().length}>
+              <View testID={`card-source-${e.ref}`} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingTop: 6 }}>
+                <Text style={{ fontSize: 13, color: colors.muted }}>{L("From", "来自")}</Text>
+                <Each of={sources()} key={(t) => t.id}>
+                  {(t) => (
+                    <View testID={`card-source-${e.ref}-${t().id}`} role="link" accessibilityLabel={`${t().id} ${t().title}`} onPress={() => taskLink(t().id)}
+                      hoverStyle={{ backgroundColor: alpha(colors.text, 0.06) }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, cursor: "pointer" }}>
+                      <Text style={{ fontFamily: MONO, fontSize: 12.5, color: colors.text }}>{t().id}</Text>
+                      <If when={t().title}>
+                        <Text style={{ flexShrink: 1, minWidth: 0, numberOfLines: 1, fontSize: 13, color: colors.muted }}>{t().title}</Text>
+                      </If>
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </If>
             {(e.kind === "proposals" || e.kind === "menu") && menuItems(e).length ? (
               <ProposalList event={e} selection={selection} done={done()} onAnswer={props.onAnswer} onReply={props.onReply} />
             ) : (
@@ -2013,7 +2037,12 @@ function Sidebar(props: {
                 {d().task ? taskItems(d().task!) : null}
               </>}>
                 <Indicator status="waiting" />
-                <Text style={rowText()}>{d().question || d().id}</Text>
+                <View style={{ flex: 1, minWidth: 0, paddingVertical: d().sources?.length ? 5 : 0 }}>
+                  <Text style={rowText()}>{d().question || d().id}</Text>
+                  <If when={d().sources?.length}>
+                    <Text testID={`side-source-${d().id}`} style={{ fontSize: 12, color: colors.faint, numberOfLines: 1 }}>{sourceLine(d().sources!)}</Text>
+                  </If>
+                </View>
                 <Text style={{ fontFamily: MONO, fontSize: 12, color: colors.faint }}>{d().id}</Text>
               </SidebarRow>
             )}

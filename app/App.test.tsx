@@ -616,6 +616,21 @@ describe("channel", () => {
     await app.waitUntil(() => !app.shows("id:ignore-D-0001"));
   });
 
+  test("a card names the task it comes from, in the sidebar and on the card, and opens it", async () => {
+    // owner, T-0150: "待办事项是哪个任务下的，光看内容看不出来"
+    const withSource = { ...status, decisions: [{ ...status.decisions[0], task: "T-0003", sources: [{ id: "T-0003", title: "升级依赖调研" }] }] };
+    const app = await open("./App.tsx", {
+      storage: STORAGE, width: 1200, height: 800, platform: "macos",
+      network: { ...hub([]), [`GET ${URL}/api/status`]: { body: withSource },
+        [`GET ${URL}/api/tasks/get?*`]: { body: { id: "T-0003", title: "升级依赖调研", agent: "lead", state: "blocked", created: ts(1), runs: [] } } },
+    });
+    await app.waitFor("id:side-source-D-0001");
+    expect(app.shows("text:T-0003 升级依赖调研")).toBe(true);
+    await app.waitFor("id:card-source-D-0001-T-0003");
+    await app.press("id:card-source-D-0001-T-0003");
+    await app.waitFor("id:task-talk");
+  });
+
   test("the sidebar's right-click menu cancels a stuck task or marks it done", async () => {
     const cancels: unknown[] = [];
     const withTask = { ...status, decisions: [{ ...status.decisions[0], task: "T-0003" }] };
