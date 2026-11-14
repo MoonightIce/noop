@@ -579,6 +579,14 @@ export function maybeProposeNext(cfg: Cfg, host: string, state: Record<string, s
   const parkedMenu = ["waiting", "blocked"].flatMap((f) => list(P("tasks", f), /^T-.*\.md$/).map((p) => readDoc(p).meta))
     .filter((m) => m.kind === "menu").map((m) => Date.parse(m.created) || 0).sort((a, b) => b - a)[0];
   if (parkedMenu && Date.now() - parkedMenu < cooldown) return;
+  // A menu task that finished without re-sending the still-pending menu (nothing new to offer) also counts as an
+  // offer; otherwise it respawns every 15 minutes for as long as the owner leaves that menu unanswered.
+  if (pendingMenu) {
+    const declined = list(P("tasks", "done"), /^T-.*\.md$/).slice(-30).map((p) => readDoc(p).meta)
+      .filter((m) => m.kind === "menu").map((m) => Date.parse(m.created) || 0)
+      .filter((t) => t > Date.parse(pendingMenu.created)).sort((a, b) => b - a)[0];
+    if (declined && Date.now() - declined < cooldown) return;
+  }
   if (state.last_menu && Date.now() - Date.parse(state.last_menu) < 15 * 60_000) return;
   const id = newTask("Propose next actions (fleet idle)", `The fleet has been idle for ${Math.round(idleMin)} minutes.
 Build the owner's next-action menu per your profile and return needs_decision.${pendingMenu ? `\nAn earlier menu ${pendingMenu.id} is still unanswered — refresh it (drop stale items) rather than repeating it verbatim.` : ""}`,

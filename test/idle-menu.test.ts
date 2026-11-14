@@ -73,3 +73,16 @@ test("a parked menu task waiting on the owner suppresses a new menu until the co
     expect(tasks()).toHaveLength(1);
   } finally { rmSync(P("tasks/waiting/T-F0900.md"), { force: true }); }
 });
+
+test("a menu task that declined to re-send the pending menu suppresses a new one until the cooldown passes", () => {
+  mkdirSync(P("tasks/done"), { recursive: true });
+  menu("D-F0045", 2000);
+  writeDoc(P("tasks/done/T-F0935.md"), { id: "T-F0935", kind: "menu", created: ago(16), status: "done" }, "not re-sent");
+  try {
+    maybeProposeNext(cfg, "test", state());
+    expect(tasks()).toEqual([]);
+    writeDoc(P("tasks/done/T-F0935.md"), { id: "T-F0935", kind: "menu", created: ago(181), status: "done" }, "not re-sent");
+    maybeProposeNext(cfg, "test", state());
+    expect(tasks()).toHaveLength(1);
+  } finally { rmSync(P("tasks/done/T-F0935.md"), { force: true }); }
+});
