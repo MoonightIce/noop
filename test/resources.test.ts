@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { staleDerivedData } from "../src/resources";
+import { shouldAlertDisk, staleDerivedData } from "../src/resources";
 
 const plist = (date: string) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,4 +25,14 @@ test.skipIf(process.platform !== "darwin")("staleDerivedData picks idle and orph
     const got = (await staleDerivedData(root, 7, now)).map((p) => p.slice(root.length + 1)).sort();
     expect(got).toEqual(["App-idle", "App-orphan"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a still-low disk alerts once a day, or sooner only when it keeps shrinking", () => {
+  const t0 = Date.parse("2026-11-16T00:00:00Z");
+  expect(shouldAlertDisk(undefined, 57, t0)).toBe(true);
+  const prev = { at: t0, freeGB: 57 };
+  expect(shouldAlertDisk(prev, 57, t0 + 30 * 60_000)).toBe(false); // the old every-30-min nag
+  expect(shouldAlertDisk(prev, 53, t0 + 6 * 3600_000)).toBe(false);
+  expect(shouldAlertDisk(prev, 45, t0 + 6 * 3600_000)).toBe(true);
+  expect(shouldAlertDisk(prev, 57, t0 + 24 * 3600_000)).toBe(true);
 });
