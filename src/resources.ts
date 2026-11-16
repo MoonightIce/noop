@@ -203,6 +203,13 @@ function cleanupSteps(cfg: Cfg, busyRepos: Set<string>): Step[] {
 }
 
 let lastCleanup = 0;
+let lastAlert: DiskAlert | undefined;
+
+export type DiskAlert = { at: number; freeGB: number };
+/** A still-low disk is reported once a day, or sooner only if free space keeps shrinking (≥ 20% below the last alert). */
+export function shouldAlertDisk(prev: DiskAlert | undefined, freeGB: number, now = Date.now()): boolean {
+  return !prev || now - prev.at >= 24 * 3600_000 || freeGB <= prev.freeGB * 0.8;
+}
 
 /** Runs tiered cleanup until disk is back above target. Returns a human summary or null if nothing needed. */
 export async function ensureDisk(cfg: Cfg, host: string, busyRepos: Set<string>, alert: (t: string) => Promise<unknown>) {
@@ -221,7 +228,11 @@ export async function ensureDisk(cfg: Cfg, host: string, busyRepos: Set<string>,
     if (!low(s)) break;
   }
   const msg = `🧹 disk cleanup freed ${gb(total)}GB → ${s.diskFreeGB}GB free (${lines.join("; ") || "nothing big"})`;
-  journal(host, msg);
-  if (low(s)) await alert(L(`⚠️ ${host} is still low on disk: ${s.diskFreeGB}GB free (${s.diskFreePct}%) after automatic cleanup freed ${gb(total)}GB. Needs your attention.`, `⚠️ ${host} 磁盘仍不足：剩余 ${s.diskFreeGB}GB（${s.diskFreePct}%），自动清理已尽力（${gb(total)}GB）。需要你处理。`));
+  if (!low(s)) { lastAlert = undefined; journal(host, msg); return msg; }
+  const nag = shouldAlertDisk(lastAlert, s.diskFreeGB);
+  if (nag || total > 1e8) journal(host, msg); // a no-op sweep every 30 min is not news
+  if (!nag) return msg;
+  lastAlert = { at: Date.now(), freeGB: s.diskFreeGB };
+  await alert(L(`⚠️ ${host} is still low on disk: ${s.diskFreeGB}GB free (${s.diskFreePct}%) after automatic cleanup freed ${gb(total)}GB. Needs your attention.`, `⚠️ ${host} 磁盘仍不足：剩余 ${s.diskFreeGB}GB（${s.diskFreePct}%），自动清理已尽力（${gb(total)}GB）。需要你处理。`));
   return msg;
 }

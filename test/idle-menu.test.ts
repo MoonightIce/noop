@@ -60,3 +60,29 @@ test("active work resets the idle window and prevents a menu", () => {
   expect(tasks()).toEqual([]);
   expect(st.idle_since).toBeUndefined();
 });
+
+test("a parked menu task waiting on the owner suppresses a new menu until the cooldown passes", () => {
+  mkdirSync(P("tasks/waiting"), { recursive: true });
+  menu("D-F0009", 2000);
+  writeDoc(P("tasks/waiting/T-F0900.md"), { id: "T-F0900", kind: "menu", created: ago(30), wait_kind: "human" }, "waiting");
+  try {
+    maybeProposeNext(cfg, "test", state());
+    expect(tasks()).toEqual([]);
+    writeDoc(P("tasks/waiting/T-F0900.md"), { id: "T-F0900", kind: "menu", created: ago(181), wait_kind: "human" }, "waiting");
+    maybeProposeNext(cfg, "test", state());
+    expect(tasks()).toHaveLength(1);
+  } finally { rmSync(P("tasks/waiting/T-F0900.md"), { force: true }); }
+});
+
+test("a menu task that declined to re-send the pending menu suppresses a new one until the cooldown passes", () => {
+  mkdirSync(P("tasks/done"), { recursive: true });
+  menu("D-F0045", 2000);
+  writeDoc(P("tasks/done/T-F0935.md"), { id: "T-F0935", kind: "menu", created: ago(16), status: "done" }, "not re-sent");
+  try {
+    maybeProposeNext(cfg, "test", state());
+    expect(tasks()).toEqual([]);
+    writeDoc(P("tasks/done/T-F0935.md"), { id: "T-F0935", kind: "menu", created: ago(181), status: "done" }, "not re-sent");
+    maybeProposeNext(cfg, "test", state());
+    expect(tasks()).toHaveLength(1);
+  } finally { rmSync(P("tasks/done/T-F0935.md"), { force: true }); }
+});

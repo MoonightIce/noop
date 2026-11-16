@@ -121,3 +121,11 @@ test("macOS host online + wait_check unrunnable on the primary: hand back to the
   expect(classify(task(m), ctx())!.action).toBe("reroute");
   expect(classify(task({ ...m, supervisor_requeued: "yes" }), ctx())!.action).toBe("escalate");
 });
+
+test("a human wait on a still-open card is not escalated as a slow run", () => {
+  const t = task({ id: "T-9", wait_kind: "human", created: new Date(NOW - 30 * H).toISOString(),
+    waiting_on: "owner 回复 decisions/open/D-0009.md", wait_check: "test -f decisions/open/D-0009.md" });
+  expect(classify(t, ctx({ decision: (id) => (id === "D-0009" ? "open" : undefined) }))).toBeNull();
+  expect(classify(t, ctx({ decision: () => "closed" }))!.action).toBe("escalate");
+  expect(classify({ ...t, meta: { ...t.meta, wait_kind: "ci" } }, ctx({ decision: () => "open" }))!.action).toBe("escalate");
+});
